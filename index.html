@@ -12,6 +12,7 @@
     .card-container { transition: all .2s ease; }
     .card-container:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.08); }
     .aspect-3-4 { aspect-ratio: 3/4; object-fit: cover; }
+    .status-error { background:#fff1f2; color:#991b1b; border:1px solid #fecaca; padding:.5rem .75rem; border-radius:.5rem; }
   </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -68,301 +69,321 @@
   </div>
 
   <script>
-    // =========================================================
-    // === 카드/성장 로직 정의 =================================
-    // =========================================================
-
-    // 내부 키 ↔ 한글 약어 라벨
-    const LABEL = {
-      ATK: '공', CRIT: '치피', FINAL: '최피', ELEM: '모속강', AFFIN: '상강'
-    };
-
-    // 정확 재현 2차식 (L=1:3120, L=2:3292, L=5:3810 정확히 일치)
-    function growthPercent(level){
-      return (1/6) * level*level + 171.5 * level + 2948.3333333333;
-    }
-
-    // 레벨캡 공식 (각성 1마다 +50, 기본 150)
-    function levelCap(awaken){ return 150 + 50*awaken; }
-
-    // 붓 비용 (Lv N → N+1)
-    function brushCost(currentLevel){
-      return Math.max(0, Math.floor(1500 + 20*(currentLevel - 1)));
-    }
-
-    // 카드 DB (26장, 이미지 비워둠 → 플레이스홀더 표시)
-    // stats는 순서대로 1각 / 3각 / 5각에서 개방
-    const CARD_DB = [
-      { name:'고블린 족장',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'ELEM'}], awakenMax:5 },
-      { name:'미노타우르스',     image:'', stats:[{type:'FINAL'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'혼령 사제',        image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'영혼 도살자',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'ELEM'}], awakenMax:5 },
-      { name:'이프리트',         image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'트윈헤드 리자드',  image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'블랙 드래곤',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'영혼 지배자',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
-      { name:'서리 늑대',        image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'예티 보스',        image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'서리 나비 여왕',   image:'', stats:[{type:'FINAL'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'맹독 여왕 거미',   image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'신록의 사슴',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
-      { name:'켈베로스',         image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'마법 공학 드래곤', image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
-      { name:'에이션트 베어',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'거대 선인장',      image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'드래곤 리자드',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
-      { name:'고대 거북',        image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
-      { name:'기간틱 크리처',    image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
-      { name:'베헤모스',         image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'크룩스',           image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
-      { name:'라쿠스',           image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'나이트 오베론',    image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'라이진 텐구',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
-      { name:'레이디 차페슈',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
-    ];
-
-    // =========================================================
-    // === UI/계산 로직(그리디 ROI, 임계/캡/붓비용 적용) ==========
-    // =========================================================
-    const cardListEl = document.getElementById('card-list');
-    const budgetEl = document.getElementById('budget');
-    const calcBtn = document.getElementById('calcBtn');
-    const resetBtn = document.getElementById('resetBtn');
-    const statusEl = document.getElementById('status');
-    const planOutput = document.getElementById('plan-output');
-    const resultSection = document.getElementById('result-section');
-    const usedBrushEl = document.getElementById('used-brush');
-    const remainingBrushEl = document.getElementById('remaining-brush');
-    const totalGainEl = document.getElementById('total-gain');
-    const metaEl = document.getElementById('meta');
-    const STORAGE_KEY = 'sss_calc_local_v3';
-
-    function renderCards(){
-      cardListEl.innerHTML = '';
-      CARD_DB.forEach((cfg, i) => {
-        const statsHtml = cfg.stats.map((s, idx) => `
-          <div class="p-2 bg-white rounded border">
-            <p class="text-xs font-semibold mb-1">
-              ${LABEL[s.type] || '없음'}
-              <span class="text-gray-500 font-normal">(각성 ${idx===0?1:(idx===1?3:5)}+)</span>
-            </p>
-          </div>
-        }).join('');
-
-        const imgUrl = cfg.image && cfg.image.trim()
-          ? cfg.image
-          : 'https://placehold.co/320x426/eeeeee/888888?text=Image';
-
-        const html = `
-          <div class="card-container bg-gray-50 border border-gray-200 rounded-lg p-3 shadow-sm relative">
-            <div id="imgv-${i}" class="block">
-              <img src="${imgUrl}" alt="${cfg.name}" class="w-full h-auto rounded-md mb-2 aspect-3-4">
-              <h4 class="font-bold text-md truncate" title="${cfg.name}">${cfg.name}</h4>
-              <button data-i="${i}" class="act-btn absolute top-2 right-2 bg-green-600 text-white text-xs font-bold py-1 px-2 rounded">활성화</button>
-            </div>
-            <div id="inpv-${i}" class="hidden">
-              <div class="flex items-center justify-between mb-2">
-                <h4 class="font-bold text-md truncate" title="${cfg.name}">${cfg.name}</h4>
-                <button data-i="${i}" class="deact-btn text-xs px-2 py-1 rounded border">비활성화</button>
-              </div>
-              <div class="grid grid-cols-2 gap-2 text-sm mb-3">
-                <label class="block">현재 레벨
-                  <input id="lv-${i}" type="number" min="0" value="0" class="w-full p-1 border rounded">
-                </label>
-                <label class="block">각성
-                  <select id="aw-${i}" class="w-full p-1 border rounded">
-                    ${Array.from({length:(cfg.awakenMax||5)+1},(_,k)=>`<option value="${k}">${k}</option>`).join('')}
-                  </select>
-                </label>
-              </div>
-              <div class="grid grid-cols-3 gap-2">${statsHtml}</div>
-            </div>
-          </div>
-        `;
-        const wrap = document.createElement('div');
-        wrap.innerHTML = html;
-        cardListEl.appendChild(wrap.firstElementChild);
-      });
-      metaEl.textContent = `카드: ${CARD_DB.length}개 | 가로 4개 배치 | 레벨캡=150+50*각성 | 붓=1500+20*(Lv-1)`;
-    }
-
-    function toggleCard(i, active){
-      const imgv = document.getElementById(`imgv-${i}`);
-      const inpv = document.getElementById(`inpv-${i}`);
-      if (active) { imgv.classList.add('hidden'); inpv.classList.remove('hidden'); }
-      else { imgv.classList.remove('hidden'); inpv.classList.add('hidden'); }
-    }
-
-    cardListEl.addEventListener('click', (e) => {
-      const t = e.target;
-      if (t.classList.contains('act-btn')) {
-        const i = +t.dataset.i;
-        toggleCard(i, true);
-        // 활성화 시 기본값: 레벨 1, 각성 1
-        const lv = document.getElementById(`lv-${i}`);
-        const aw = document.getElementById(`aw-${i}`);
-        if (+lv.value === 0) lv.value = '1';
-        aw.value = '1';
-        saveLocal();
-      }
-      if (t.classList.contains('deact-btn')) {
-        const i = +t.dataset.i;
-        toggleCard(i, false);
-        document.getElementById(`lv-${i}`).value = '0';
-        document.getElementById(`aw-${i}`).value = '0';
-        saveLocal();
+    // 전역 에러를 상태창에 표시 (렌더 중 오류 추적)
+    window.addEventListener('error', (e) => {
+      const st = document.getElementById('status');
+      if (st) {
+        st.classList.add('status-error');
+        st.textContent = '스크립트 오류: ' + (e.error?.message || e.message || '알 수 없는 오류');
       }
     });
 
-    function saveLocal(){
-      const data = {
-        budget: budgetEl.value,
-        cards: CARD_DB.map((_, i) => ({
-          active: document.getElementById(`inpv-${i}`)?.classList.contains('hidden') ? false : true,
-          level: +document.getElementById(`lv-${i}`)?.value || 0,
-          awaken: +document.getElementById(`aw-${i}`)?.value || 0
-        }))
+    document.addEventListener('DOMContentLoaded', () => {
+      // =========================================================
+      // === 카드/성장 로직 정의 =================================
+      // =========================================================
+
+      // 내부 키 ↔ 한글 약어 라벨
+      const LABEL = {
+        ATK: '공', CRIT: '치피', FINAL: '최피', ELEM: '모속강', AFFIN: '상강'
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    }
-    function loadLocal(){
-      try{
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (!raw) return;
-        const data = JSON.parse(raw);
-        budgetEl.value = data.budget || '100000';
-        (data.cards||[]).forEach((c,i) => {
-          if (c.active) toggleCard(i, true);
-          document.getElementById(`lv-${i}`).value = c.level ?? 0;
-          document.getElementById(`aw-${i}`).value = c.awaken ?? 0;
-        });
-      }catch{}
-    }
 
-    resetBtn.addEventListener('click', () => {
-      if (!confirm('모든 입력을 초기화할까요?')) return;
-      localStorage.removeItem(STORAGE_KEY);
-      budgetEl.value = '100000';
-      CARD_DB.forEach((_,i)=>{ toggleCard(i,false); document.getElementById(`lv-${i}`).value=0; document.getElementById(`aw-${i}`).value=0; });
-      resultSection.classList.add('hidden');
-    });
-
-    // 효율 계산: (1+공%)(1+치피%)(1+최피%)(1+모속강%)(1+상강%)
-    function productAtState(state){
-      const sum = { ATK:0, CRIT:0, FINAL:0, ELEM:0, AFFIN:0 };
-      for (const s of state){
-        if (s.level <= 0) continue;
-        const cfg = CARD_DB.find(c => c.name===s.name);
-        if (!cfg) continue;
-
-        // 각성 임계: 1/3/5에서 스탯 1/2/3 활성화
-        const enabled = [];
-        if (s.awaken >= 1 && cfg.stats[0]) enabled.push(cfg.stats[0].type);
-        if (s.awaken >= 3 && cfg.stats[1]) enabled.push(cfg.stats[1].type);
-        if (s.awaken >= 5 && cfg.stats[2]) enabled.push(cfg.stats[2].type);
-
-        // 성장 로직(스탯 종류와 무관) – 누적 % 값
-        const val = growthPercent(s.level);
-        for (const t of enabled){
-          if (t==='ATK')   sum.ATK   += val;
-          if (t==='CRIT')  sum.CRIT  += val;
-          if (t==='FINAL') sum.FINAL += val;
-          if (t==='ELEM')  sum.ELEM  += val;
-          if (t==='AFFIN') sum.AFFIN += val;
-        }
+      // 정확 재현 2차식 (L=1:3120, L=2:3292, L=5:3810 정확히 일치)
+      function growthPercent(level){
+        return (1/6) * level*level + 171.5 * level + 2948.3333333333;
       }
-      return (1 + sum.ATK/100) * (1 + sum.CRIT/100) * (1 + sum.FINAL/100) * (1 + sum.ELEM/100) * (1 + sum.AFFIN/100);
-    }
 
-    function runCalculation(){
-      saveLocal();
-      const initialBudget = +budgetEl.value || 0;
-      let budgetLeft = initialBudget;
+      // 레벨캡 공식 (각성 1마다 +50, 기본 150)
+      function levelCap(awaken){ return 150 + 50*awaken; }
 
-      // 활성 카드 수집
-      const act = [];
-      CARD_DB.forEach((cfg,i) => {
-        const active = !document.getElementById(`inpv-${i}`).classList.contains('hidden');
-        if (!active) return;
-        const level = +document.getElementById(`lv-${i}`).value || 0;
-        const awaken = +document.getElementById(`aw-${i}`).value || 0;
-        if (level <= 0) return;
-        act.push({ name: cfg.name, level, awaken, cap: levelCap(awaken) });
+      // 붓 비용 (Lv N → N+1)
+      function brushCost(currentLevel){
+        return Math.max(0, Math.floor(1500 + 20*(currentLevel - 1)));
+      }
+
+      // 카드 DB (26장, 이미지 비워뒀음 → 플레이스홀더 표시)
+      // stats는 순서대로 1각 / 3각 / 5각에서 개방
+      const CARD_DB = [
+        { name:'고블린 족장',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'ELEM'}], awakenMax:5 },
+        { name:'미노타우르스',     image:'', stats:[{type:'FINAL'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'혼령 사제',        image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'영혼 도살자',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'ELEM'}], awakenMax:5 },
+        { name:'이프리트',         image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'트윈헤드 리자드',  image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'블랙 드래곤',      image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'영혼 지배자',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
+        { name:'서리 늑대',        image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'예티 보스',        image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'서리 나비 여왕',   image:'', stats:[{type:'FINAL'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'맹독 여왕 거미',   image:'', stats:[{type:'ATK'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'신록의 사슴',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
+        { name:'켈베로스',         image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'마법 공학 드래곤', image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
+        { name:'에이션트 베어',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'거대 선인장',      image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'드래곤 리자드',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
+        { name:'고대 거북',        image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
+        { name:'기간틱 크리처',    image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'ELEM'}], awakenMax:5 },
+        { name:'베헤모스',         image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'크룩스',           image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
+        { name:'라쿠스',           image:'', stats:[{type:'CRIT'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'나이트 오베론',    image:'', stats:[{type:'CRIT'},{type:'ELEM'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'라이진 텐구',      image:'', stats:[{type:'ATK'},{type:'FINAL'},{type:'AFFIN'}], awakenMax:5 },
+        { name:'레이디 차페슈',    image:'', stats:[{type:'ATK'},{type:'CRIT'},{type:'FINAL'}], awakenMax:5 },
+      ];
+
+      // =========================================================
+      // === UI/계산 로직(그리디 ROI, 임계/캡/붓비용 적용) ==========
+      // =========================================================
+      const cardListEl = document.getElementById('card-list');
+      const budgetEl = document.getElementById('budget');
+      const calcBtn = document.getElementById('calcBtn');
+      const resetBtn = document.getElementById('resetBtn');
+      const statusEl = document.getElementById('status');
+      const planOutput = document.getElementById('plan-output');
+      const resultSection = document.getElementById('result-section');
+      const usedBrushEl = document.getElementById('used-brush');
+      const remainingBrushEl = document.getElementById('remaining-brush');
+      const totalGainEl = document.getElementById('total-gain');
+      const metaEl = document.getElementById('meta');
+      const STORAGE_KEY = 'sss_calc_local_v4';
+
+      function renderCards(){
+        cardListEl.innerHTML = '';
+        CARD_DB.forEach((cfg, i) => {
+          const statsHtml = cfg.stats.map((s, idx) => `
+            <div class="p-2 bg-white rounded border">
+              <p class="text-xs font-semibold mb-1">
+                ${LABEL[s.type] || '없음'}
+                <span class="text-gray-500 font-normal">(각성 ${idx===0?1:(idx===1?3:5)}+)</span>
+              </p>
+            </div>
+          `).join('');
+
+          const imgUrl = (cfg.image && cfg.image.trim())
+            ? cfg.image
+            : 'https://placehold.co/320x426/eeeeee/888888?text=Image';
+
+          const html = `
+            <div class="card-container bg-gray-50 border border-gray-200 rounded-lg p-3 shadow-sm relative">
+              <div id="imgv-${i}" class="block">
+                <img src="${imgUrl}" alt="${cfg.name}" class="w-full h-auto rounded-md mb-2 aspect-3-4">
+                <h4 class="font-bold text-md truncate" title="${cfg.name}">${cfg.name}</h4>
+                <button data-i="${i}" class="act-btn absolute top-2 right-2 bg-green-600 text-white text-xs font-bold py-1 px-2 rounded">활성화</button>
+              </div>
+              <div id="inpv-${i}" class="hidden">
+                <div class="flex items-center justify-between mb-2">
+                  <h4 class="font-bold text-md truncate" title="${cfg.name}">${cfg.name}</h4>
+                  <button data-i="${i}" class="deact-btn text-xs px-2 py-1 rounded border">비활성화</button>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-sm mb-3">
+                  <label class="block">현재 레벨
+                    <input id="lv-${i}" type="number" min="0" value="0" class="w-full p-1 border rounded">
+                  </label>
+                  <label class="block">각성
+                    <select id="aw-${i}" class="w-full p-1 border rounded">
+                      ${Array.from({length:(cfg.awakenMax||5)+1},(_,k)=>`<option value="${k}">${k}</option>`).join('')}
+                    </select>
+                  </label>
+                </div>
+                <div class="grid grid-cols-3 gap-2">${statsHtml}</div>
+              </div>
+            </div>
+          `;
+          // 안전 삽입 (일부 브라우저 firstElementChild 이슈 회피)
+          cardListEl.insertAdjacentHTML('beforeend', html);
+        });
+        metaEl.textContent = `카드: ${CARD_DB.length}개 | 가로 4개 배치 | 레벨캡=150+50*각성 | 붓=1500+20*(Lv-1)`;
+      }
+
+      function toggleCard(i, active){
+        const imgv = document.getElementById(`imgv-${i}`);
+        const inpv = document.getElementById(`inpv-${i}`);
+        if (active) { imgv?.classList.add('hidden'); inpv?.classList.remove('hidden'); }
+        else { imgv?.classList.remove('hidden'); inpv?.classList.add('hidden'); }
+      }
+
+      cardListEl.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t.classList.contains('act-btn')) {
+          const i = +t.dataset.i;
+          toggleCard(i, true);
+          // 활성화 시 기본값: 레벨 1, 각성 1
+          const lv = document.getElementById(`lv-${i}`);
+          const aw = document.getElementById(`aw-${i}`);
+          if (lv && +lv.value === 0) lv.value = '1';
+          if (aw) aw.value = '1';
+          saveLocal();
+        }
+        if (t.classList.contains('deact-btn')) {
+          const i = +t.dataset.i;
+          toggleCard(i, false);
+          const lv = document.getElementById(`lv-${i}`);
+          const aw = document.getElementById(`aw-${i}`);
+          if (lv) lv.value = '0';
+          if (aw) aw.value = '0';
+          saveLocal();
+        }
       });
 
-      if (act.length === 0) {
-        statusEl.textContent = '활성화된 카드가 없습니다.';
-        return;
+      function saveLocal(){
+        const data = {
+          budget: budgetEl.value,
+          cards: CARD_DB.map((_, i) => ({
+            active: !(document.getElementById(`inpv-${i}`)?.classList.contains('hidden')),
+            level: +document.getElementById(`lv-${i}`)?.value || 0,
+            awaken: +document.getElementById(`aw-${i}`)?.value || 0
+          }))
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
       }
-
-      const currentState = act.map(a => ({...a}));
-      let currentProduct = productAtState(currentState);
-
-      const steps = [];
-      let guard = 100000;
-
-      while (budgetLeft > 0 && guard-- > 0) {
-        let bestIdx = -1, bestROI = 0, bestCost = 0, bestNextProd = 0;
-        for (let i=0; i<currentState.length; i++){
-          const s = currentState[i];
-          if (s.level >= s.cap) continue;
-          const cost = brushCost(s.level);
-          if (cost > budgetLeft) continue;
-
-          const nextState = currentState.map((x,idx)=> idx===i ? ({...x, level: x.level+1}) : x);
-          const nextProd = productAtState(nextState);
-          const roi = (nextProd - currentProduct) / cost;
-          if (roi > bestROI) { bestROI = roi; bestIdx = i; bestCost = cost; bestNextProd = nextProd; }
-        }
-        if (bestIdx === -1 || bestROI <= 0) break;
-
-        currentState[bestIdx].level += 1;
-        budgetLeft -= bestCost;
-        steps.push({ name: currentState[bestIdx].name, to: currentState[bestIdx].level, cost: bestCost, roi: bestROI });
-        currentProduct = bestNextProd;
-      }
-
-      // 출력
-      let html = '';
-      if (steps.length === 0) {
-        html = '<p>레벨업 할 카드가 없거나 예산이 부족합니다.</p>';
-      } else {
-        html = '<ol class="list-decimal pl-5 space-y-1">' + steps.map(s =>
-          `<li><strong>${s.name}</strong> → <span class="text-emerald-700 font-semibold">Lv.${s.to}</span> <span class="text-xs text-gray-500">(붓 ${s.cost.toLocaleString()}개, ROI ${(s.roi*100).toFixed(4)}%)</span></li>`
-        ).join('') + '</ol>`;
-      }
-      planOutput.innerHTML = html;
-
-      const initialProduct = productAtState(act);
-      const totalGain = initialProduct > 0 ? ((currentProduct/initialProduct - 1) * 100) : 0;
-
-      usedBrushEl.textContent = (initialBudget - budgetLeft).toLocaleString();
-      remainingBrushEl.textContent = budgetLeft.toLocaleString();
-      totalGainEl.textContent = `${(totalGain||0).toFixed(4)}%`;
-
-      resultSection.classList.remove('hidden');
-      statusEl.textContent = steps.length ? '계산 완료' : '추가로 효율적인 레벨업이 없습니다.';
-    }
-
-    document.getElementById('calcBtn').addEventListener('click', runCalculation);
-
-    // 초기 렌더 & 상태 복원
-    function init(){
-      renderCards();
-      try{
-        const raw = localStorage.getItem(STORAGE_KEY);
-        if (raw){
+      function loadLocal(){
+        try{
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return;
           const data = JSON.parse(raw);
           budgetEl.value = data.budget || '100000';
           (data.cards||[]).forEach((c,i) => {
             if (c.active) toggleCard(i, true);
-            document.getElementById(`lv-${i}`).value = c.level ?? 0;
-            document.getElementById(`aw-${i}`).value = c.awaken ?? 0;
+            const lv = document.getElementById(`lv-${i}`);
+            const aw = document.getElementById(`aw-${i}`);
+            if (lv) lv.value = c.level ?? 0;
+            if (aw) aw.value = c.awaken ?? 0;
           });
+        }catch{}
+      }
+
+      resetBtn.addEventListener('click', () => {
+        if (!confirm('모든 입력을 초기화할까요?')) return;
+        localStorage.removeItem(STORAGE_KEY);
+        budgetEl.value = '100000';
+        CARD_DB.forEach((_,i)=>{ toggleCard(i,false); const lv=document.getElementById(`lv-${i}`); const aw=document.getElementById(`aw-${i}`); if(lv)lv.value=0; if(aw)aw.value=0; });
+        resultSection.classList.add('hidden');
+      });
+
+      // 효율 계산: (1+공%)(1+치피%)(1+최피%)(1+모속강%)(1+상강%)
+      function productAtState(state){
+        const sum = { ATK:0, CRIT:0, FINAL:0, ELEM:0, AFFIN:0 };
+        for (const s of state){
+          if (s.level <= 0) continue;
+          const cfg = CARD_DB.find(c => c.name===s.name);
+          if (!cfg) continue;
+
+          // 각성 임계: 1/3/5에서 스탯 1/2/3 활성화
+          const enabled = [];
+          if (s.awaken >= 1 && cfg.stats[0]) enabled.push(cfg.stats[0].type);
+          if (s.awaken >= 3 && cfg.stats[1]) enabled.push(cfg.stats[1].type);
+          if (s.awaken >= 5 && cfg.stats[2]) enabled.push(cfg.stats[2].type);
+
+          // 성장 로직(스탯 종류와 무관) – 누적 % 값
+          const val = growthPercent(s.level);
+          for (const t of enabled){
+            if (t==='ATK')   sum.ATK   += val;
+            if (t==='CRIT')  sum.CRIT  += val;
+            if (t==='FINAL') sum.FINAL += val;
+            if (t==='ELEM')  sum.ELEM  += val;
+            if (t==='AFFIN') sum.AFFIN += val;
+          }
         }
-      }catch{}
-    }
-    init();
+        return (1 + sum.ATK/100) * (1 + sum.CRIT/100) * (1 + sum.FINAL/100) * (1 + sum.ELEM/100) * (1 + sum.AFFIN/100);
+      }
+
+      function runCalculation(){
+        saveLocal();
+        const initialBudget = +budgetEl.value || 0;
+        let budgetLeft = initialBudget;
+
+        // 활성 카드 수집
+        const act = [];
+        CARD_DB.forEach((cfg,i) => {
+          const active = !(document.getElementById(`inpv-${i}`)?.classList.contains('hidden'));
+          if (!active) return;
+          const level = +document.getElementById(`lv-${i}`)?.value || 0;
+          const awaken = +document.getElementById(`aw-${i}`)?.value || 0;
+          if (level <= 0) return;
+          act.push({ name: cfg.name, level, awaken, cap: levelCap(awaken) });
+        });
+
+        if (act.length === 0) {
+          statusEl.classList.add('status-error');
+          statusEl.textContent = '활성화된 카드가 없습니다.';
+          return;
+        } else {
+          statusEl.classList.remove('status-error');
+          statusEl.textContent = '계산 중…';
+        }
+
+        const currentState = act.map(a => ({...a}));
+        let currentProduct = productAtState(currentState);
+
+        const steps = [];
+        let guard = 100000;
+
+        while (budgetLeft > 0 && guard-- > 0) {
+          let bestIdx = -1, bestROI = 0, bestCost = 0, bestNextProd = 0;
+          for (let i=0; i<currentState.length; i++){
+            const s = currentState[i];
+            if (s.level >= s.cap) continue;
+            const cost = brushCost(s.level);
+            if (cost > budgetLeft) continue;
+
+            const nextState = currentState.map((x,idx)=> idx===i ? ({...x, level: x.level+1}) : x);
+            const nextProd = productAtState(nextState);
+            const roi = (nextProd - currentProduct) / cost;
+            if (roi > bestROI) { bestROI = roi; bestIdx = i; bestCost = cost; bestNextProd = nextProd; }
+          }
+          if (bestIdx === -1 || bestROI <= 0) break;
+
+          currentState[bestIdx].level += 1;
+          budgetLeft -= bestCost;
+          steps.push({ name: currentState[bestIdx].name, to: currentState[bestIdx].level, cost: bestCost, roi: bestROI });
+          currentProduct = bestNextProd;
+        }
+
+        // 출력
+        let html = '';
+        if (steps.length === 0) {
+          html = '<p>레벨업 할 카드가 없거나 예산이 부족합니다.</p>';
+        } else {
+          html = '<ol class="list-decimal pl-5 space-y-1">' + steps.map(s =>
+            `<li><strong>${s.name}</strong> → <span class="text-emerald-700 font-semibold">Lv.${s.to}</span> <span class="text-xs text-gray-500">(붓 ${s.cost.toLocaleString()}개, ROI ${(s.roi*100).toFixed(4)}%)</span></li>`
+          ).join('') + '</ol>`;
+        }
+        planOutput.innerHTML = html;
+
+        const initialProduct = productAtState(act);
+        const totalGain = initialProduct > 0 ? ((currentProduct/initialProduct - 1) * 100) : 0;
+
+        usedBrushEl.textContent = (initialBudget - budgetLeft).toLocaleString();
+        remainingBrushEl.textContent = budgetLeft.toLocaleString();
+        totalGainEl.textContent = `${(totalGain||0).toFixed(4)}%`;
+
+        resultSection.classList.remove('hidden');
+        statusEl.textContent = steps.length ? '계산 완료' : '추가로 효율적인 레벨업이 없습니다.';
+      }
+
+      document.getElementById('calcBtn').addEventListener('click', runCalculation);
+
+      // 초기 렌더 & 상태 복원
+      function init(){
+        renderCards();
+        try{
+          const raw = localStorage.getItem(STORAGE_KEY);
+          if (raw){
+            const data = JSON.parse(raw);
+            budgetEl.value = data.budget || '100000';
+            (data.cards||[]).forEach((c,i) => {
+              if (c.active) toggleCard(i, true);
+              const lv = document.getElementById(`lv-${i}`);
+              const aw = document.getElementById(`aw-${i}`);
+              if (lv) lv.value = c.level ?? 0;
+              if (aw) aw.value = c.awaken ?? 0;
+            });
+          }
+        }catch{}
+      }
+      init();
+    });
   </script>
 </body>
 </html>
